@@ -48,6 +48,27 @@ class SceneTree:
         parent = self._node_ids[parent_id]
         parent.children.add(item)
 
+    def image_filename(self, image: si.Image) -> tp.Optional[str]:
+        """Resolve the filename of the asset `image` places.
+
+        The placement names an asset by id; the filename is declared
+        separately in the scene's image info block. Returns None when this
+        scene does not say, which covers both a file with no info block and a
+        placement naming an asset that nothing declares.
+        """
+        asset_id = image.asset_id
+        if self.image_info is None:
+            _logger.warning(
+                "Image places asset %s but the scene declares no images",
+                asset_id,
+            )
+            return None
+        info = self.image_info.images.get(asset_id)
+        if info is None:
+            _logger.warning("Image places undeclared asset %s", asset_id)
+            return None
+        return info.filename.value
+
     def walk(self) -> tp.Iterator[si.SceneItem]:
         """Iterate through all leaf items (not groups)."""
         yield from _walk_items(self.root)

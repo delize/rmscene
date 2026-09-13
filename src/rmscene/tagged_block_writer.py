@@ -166,7 +166,7 @@ class TaggedBlockWriter:
             self.write_id(2, value.value)
 
     def write_lww_bytes(self, index: int, value: LwwValue[bytes]):
-        "Write a LWW bytes."
+        "Write a LWW bytes value."
         with self.write_subblock(index):
             self.write_id(1, value.timestamp)
             self.write_bytes(2, value.value)
@@ -178,7 +178,7 @@ class TaggedBlockWriter:
             self.write_string(2, value.value)
 
     def write_bytes(self, index: int, value: bytes):
-        """Write a standard bytes block."""
+        """Write an opaque bytes block, with no length prefix."""
         with self.write_subblock(index):
             self.data.write_bytes(value)
 
