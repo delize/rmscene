@@ -10,6 +10,18 @@ To convert rm files to other formats, you can use [rmc](https://github.com/rickl
 
 ### Unreleased
 
+New features:
+
+- Add support for new blocks: `0x0E` (`SceneImageInfoBlock`) and `0x0F`
+  (`SceneImageItemBlock`, scene item type `0x07`), used for images inserted on
+  the device since reMarkable software version 3.27. The info block declares
+  image assets by UUID together with the PNG filename backing them; the item
+  block places a declared asset as a quad of `(x, y, u, v)` vertices. The PNG
+  itself lives alongside the page, at `<documentId>/<pageId>/<imageId>.png`.
+  Based on [#52](https://github.com/ricklupton/rmscene/pull/52)
+- Store `SceneImageInfoBlock` on `SceneTree` as `image_info`, and resolve each
+  placement's `filename` when building the tree
+
 ### v0.8.0
   
 New features:
