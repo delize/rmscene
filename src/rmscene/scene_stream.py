@@ -694,7 +694,9 @@ class SceneImageItemBlock(SceneItemBlock):
     BLOCK_TYPE: tp.ClassVar = 0x0F
     ITEM_TYPE: tp.ClassVar = 0x07
 
-    _ints = [0, 1, 2, 2, 3, 0]
+    # Observed to be constant in all files seen so far. Read and written
+    # per-item rather than assumed, so unfamiliar values round-trip.
+    DEFAULT_INTS: tp.ClassVar = [0, 1, 2, 2, 3, 0]
 
     def version_info(self, writer: TaggedBlockWriter) -> tuple[int, int]:
         return (2, 2)
@@ -705,18 +707,29 @@ class SceneImageItemBlock(SceneItemBlock):
         uuid = reader.read_lww_bytes(1)
         timestamp = reader.read_id(2)
 
-        with reader.read_subblock(3) as block_info:
-            l = reader.data.read_varuint()
-            assert l == 16
-            vertices = [reader.data.read_float32() for _ in range(16)]
+        with reader.read_subblock(3):
+            num_floats = reader.data.read_varuint()
+            if num_floats % 4 != 0:
+                raise ValueError(
+                    "Image vertex data is not a whole number of (x, y, u, v) "
+                    "tuples: %d floats" % num_floats
+                )
+            vertices = [reader.data.read_float32() for _ in range(num_floats)]
 
-        with reader.read_subblock(4) as block_info:
-            l = reader.data.read_varuint()
-            assert l == len(cls._ints)
-            _ints = [reader.data.read_uint32() for _ in range(len(cls._ints))]
-            assert _ints == cls._ints
+        with reader.read_subblock(4):
+            num_ints = reader.data.read_varuint()
+            unknown_ints = [reader.data.read_uint32() for _ in range(num_ints)]
+            if unknown_ints != cls.DEFAULT_INTS:
+                _logger.debug(
+                    "Unexpected values in image item block: %s", unknown_ints
+                )
 
-        return si.Image(uuid=uuid, vertices=vertices, move_id=timestamp)
+        return si.Image(
+            uuid=uuid,
+            vertices=vertices,
+            move_id=timestamp,
+            unknown_ints=unknown_ints,
+        )
 
     def value_to_stream(self, writer: TaggedBlockWriter, value: si.Image):
         # XXX make sure this version ends up in block header
@@ -729,8 +742,8 @@ class SceneImageItemBlock(SceneItemBlock):
                 writer.data.write_float32(v)
 
         with writer.write_subblock(4):
-            writer.data.write_varuint(len(self._ints))
-            for v in self._ints:
+            writer.data.write_varuint(len(value.unknown_ints))
+            for v in value.unknown_ints:
                 writer.data.write_uint32(v)
 
 class SceneTextItemBlock(SceneItemBlock):
@@ -951,6 +964,27 @@ def write_blocks(
         block.write(stream)
 
 
+def _lookup_image_filename(tree: SceneTree, image: si.Image) -> tp.Optional[str]:
+    """Resolve the PNG filename an image placement refers to.
+
+    The placement names an asset by UUID; the filename is declared
+    separately in a SceneImageInfoBlock. Either may be missing in files we
+    do not fully understand, so warn rather than failing the whole read.
+    """
+    asset_id = image.asset_id
+    if tree.image_info is None:
+        _logger.warning(
+            "Image item references asset %s but no image info block was read",
+            asset_id,
+        )
+        return None
+    info = tree.image_info.images.get(asset_id)
+    if info is None:
+        _logger.warning("Image item references undeclared asset %s", asset_id)
+        return None
+    return info.filename.value
+
+
 def build_tree(tree: SceneTree, blocks: Iterable[Block]):
     """Read `blocks` and add contents to `tree`."""
     for b in blocks:
@@ -987,10 +1021,11 @@ def build_tree(tree: SceneTree, blocks: Iterable[Block]):
             # Add this entry to children of parent_id
             tree.add_item(b.item, b.parent_id)
         elif isinstance(b, SceneImageItemBlock):
-            node = b.item.value
-            if node is None:
-                continue
-            node.filename = tree.image_info.images[UUID(bytes_le=node.uuid.value)].filename.value
+            image = b.item.value
+            # Deleted placements have no value, like other deleted scene
+            # items; they are still part of the CRDT sequence.
+            if image is not None:
+                image.filename = _lookup_image_filename(tree, image)
             tree.add_item(b.item, b.parent_id)
         elif isinstance(b, SceneInfo):
             tree.scene_info = b

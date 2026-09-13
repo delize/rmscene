@@ -12,7 +12,7 @@ from .crdt_sequence import CrdtSequenceItem
 from . import scene_items as si
 
 if tp.TYPE_CHECKING:
-    from .scene_stream import SceneInfo
+    from .scene_stream import SceneInfo, SceneImageInfoBlock
 
 _logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ class SceneTree:
         self.root = si.Group(ROOT_ID)
         self._node_ids = {self.root.node_id: self.root}
         self.scene_info: tp.Optional["SceneInfo"] = None
+        self.image_info: tp.Optional["SceneImageInfoBlock"] = None
         self.root_text: tp.Optional[si.Text] = None
 
     def __contains__(self, node_id: CrdtId):

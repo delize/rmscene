@@ -4,6 +4,7 @@ import enum
 import logging
 import typing as tp
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from .crdt_sequence import CrdtSequence
 from .tagged_block_common import CrdtId, LwwValue
@@ -30,10 +31,31 @@ class ImageInfo(SceneItem):
 
 @dataclass
 class Image(SceneItem):
+    """An image asset placed in the scene.
+
+    The image is placed as a quad of four (x, y, u, v) vertices, stored
+    flattened in `vertices`. `uuid` refers to an asset declared in the
+    scene's image info block, which is what gives `filename`.
+    """
+
     uuid: LwwValue[bytes]
     vertices: list[float]
     move_id: tp.Optional[CrdtId] = None
     filename: tp.Optional[str] = None
+    # Meaning unknown; kept so the block can be written back unchanged.
+    unknown_ints: list[int] = field(default_factory=lambda: [0, 1, 2, 2, 3, 0])
+
+    @property
+    def asset_id(self) -> UUID:
+        """The UUID of the asset this places, as declared in ImageInfo."""
+        return UUID(bytes_le=self.uuid.value)
+
+    def bounding_rect(self) -> "Rectangle":
+        """The axis-aligned bounding box of the placement quad."""
+        xs = self.vertices[0::4]
+        ys = self.vertices[1::4]
+        x, y = min(xs), min(ys)
+        return Rectangle(x, y, max(xs) - x, max(ys) - y)
 
 
 ## Group
