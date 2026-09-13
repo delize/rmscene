@@ -374,3 +374,130 @@ def test_scene_info_paper_size():
         tree = read_tree(f)
     assert tree.scene_info is not None
     assert tree.scene_info.paper_size == (1620, 2160)
+
+
+####################################################################
+# Images
+####################################################################
+
+
+IMAGE_ASSET_ID = UUID("39d60a0e-77cb-bc8c-ba4c-17274848bd16")
+IMAGE_FILENAME = "4ef8f2c9-96c4-45f0-9d20-17b9c7c0352c.png"
+
+
+def image_blocks(info_images=None, asset_id=IMAGE_ASSET_ID):
+    """A minimal tree holding one live and one deleted image placement."""
+    blocks = [
+        SceneTreeBlock(
+            tree_id=CrdtId(0, 11),
+            node_id=CrdtId(0, 0),
+            is_update=True,
+            parent_id=CrdtId(0, 1),
+        ),
+        TreeNodeBlock(si.Group(CrdtId(0, 1))),
+        TreeNodeBlock(
+            si.Group(node_id=CrdtId(0, 11), label=LwwValue(CrdtId(0, 12), "Layer 1"))
+        ),
+        SceneGroupItemBlock(
+            parent_id=CrdtId(0, 1),
+            item=CrdtSequenceItem(
+                item_id=CrdtId(0, 13),
+                left_id=CrdtId(0, 0),
+                right_id=CrdtId(0, 0),
+                deleted_length=0,
+                value=CrdtId(0, 11),
+            ),
+        ),
+        SceneImageItemBlock(
+            parent_id=CrdtId(0, 11),
+            item=CrdtSequenceItem(
+                item_id=CrdtId(1, 16),
+                left_id=CrdtId(0, 0),
+                right_id=CrdtId(0, 0),
+                deleted_length=1,
+                value=None,
+            ),
+        ),
+        SceneImageItemBlock(
+            parent_id=CrdtId(0, 11),
+            item=CrdtSequenceItem(
+                item_id=CrdtId(1, 20),
+                left_id=CrdtId(1, 16),
+                right_id=CrdtId(0, 0),
+                deleted_length=0,
+                value=si.Image(
+                    uuid=LwwValue(CrdtId(1, 22), asset_id.bytes_le),
+                    vertices=[0.0, 0.0, 0.0, 0.0] * 4,
+                    move_id=CrdtId(1, 21),
+                ),
+            ),
+        ),
+    ]
+    if info_images is not None:
+        blocks.insert(0, SceneImageInfoBlock(images=info_images))
+    return blocks
+
+
+DECLARED_IMAGE = {
+    IMAGE_ASSET_ID: si.ImageInfo(
+        filename=LwwValue(CrdtId(1, 17), IMAGE_FILENAME),
+        flags=LwwValue(CrdtId(0, 0), b"\x11\x00"),
+    )
+}
+
+
+def test_image_filename_resolved_from_info_block():
+    tree = SceneTree()
+    build_tree(tree, image_blocks(DECLARED_IMAGE))
+
+    assert tree.image_info is not None
+    images = [i for i in tree.walk() if isinstance(i, si.Image)]
+    assert len(images) == 1
+    assert images[0].filename == IMAGE_FILENAME
+
+
+def test_deleted_image_placements_stay_in_sequence():
+    """Deleted placements leave tombstones, as deleted lines and glyphs do."""
+    tree = SceneTree()
+    build_tree(tree, image_blocks(DECLARED_IMAGE))
+
+    layer = tree[CrdtId(0, 11)]
+    assert [item.item_id for item in layer.children.sequence_items()] == [
+        CrdtId(1, 16),
+        CrdtId(1, 20),
+    ]
+
+
+def test_image_without_info_block_does_not_fail():
+    tree = SceneTree()
+    build_tree(tree, image_blocks(info_images=None))
+
+    assert tree.image_info is None
+    images = [i for i in tree.walk() if isinstance(i, si.Image)]
+    assert images[0].filename is None
+
+
+def test_image_referencing_undeclared_asset_does_not_fail():
+    other = UUID("11111111-2222-3333-4444-555555555555")
+    tree = SceneTree()
+    build_tree(tree, image_blocks(DECLARED_IMAGE, asset_id=other))
+
+    images = [i for i in tree.walk() if isinstance(i, si.Image)]
+    assert images[0].filename is None
+
+
+def test_scene_tree_image_info_defaults_to_none():
+    """Files with no images must not raise on attribute access."""
+    with open(DATA_PATH / "Normal_AB.rm", "rb") as f:
+        tree = read_tree(f)
+    assert tree.image_info is None
+
+
+def test_read_tree_with_images():
+    with open(DATA_PATH / "Image_v3.28.rm", "rb") as f:
+        tree = read_tree(f)
+
+    images = [i for i in tree.walk() if isinstance(i, si.Image)]
+    assert len(images) == 1
+    assert images[0].filename == IMAGE_FILENAME
+    assert images[0].asset_id == IMAGE_ASSET_ID

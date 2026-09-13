@@ -46,6 +46,7 @@ TEST_FILES_AND_VERSIONS = [
     ("With_SceneInfo_Block.rm", "3.4"),  # XXX version?
     ("Color_and_tool_v3.14.4.rm", "3.14"),
     ("More_color_highlight_shader_v3.15.4.2.rm", "3.15"),
+    ("Image_v3.28.rm", "3.28"),
 ]
 
 
@@ -71,7 +72,11 @@ def test_full_roundtrip(test_file, version):
 
 # Temporarily add test files here that add new data fields before updating the
 # parsing code properly.
-FULL_PARSING_XFAILS = []
+FULL_PARSING_XFAILS = [
+    # The image blocks themselves parse fully; SceneInfo gained fields in
+    # 3.27 that are not decoded yet, so the block keeps extra_data.
+    "Image_v3.28.rm",
+]
 
 TEST_FILES_FOR_FULL_PARSING = [
     pytest.param(
@@ -417,3 +422,132 @@ def test_write_id(crdt_id: CrdtId):
     buf = BytesIO()
     s = TaggedBlockWriter(buf)
     s.write_id(3, crdt_id)
+
+
+####################################################################
+# Image blocks (0x0E, 0x0F), introduced for native image insertion
+####################################################################
+
+
+IMAGE_ASSET_ID = UUID("39d60a0e-77cb-bc8c-ba4c-17274848bd16")
+IMAGE_FILENAME = "4ef8f2c9-96c4-45f0-9d20-17b9c7c0352c.png"
+
+# The quad written for this image, as four (x, y, u, v) vertices going
+# clockwise from the top left corner.
+IMAGE_VERTICES = [
+    -613.595458984375, 505.03173828125, 0.0, 0.0,
+    620.921875, 505.03173828125, 1.0, 0.0,
+    620.921875, 1809.692138671875, 1.0, 1.0,
+    -613.595458984375, 1809.692138671875, 0.0, 1.0,
+]
+
+
+def read_image_test_file():
+    with open(DATA_PATH / "Image_v3.28.rm", "rb") as f:
+        return list(read_blocks(f))
+
+
+def test_read_image_info_block():
+    blocks = read_image_test_file()
+    info = [b for b in blocks if isinstance(b, SceneImageInfoBlock)]
+    assert len(info) == 1
+    assert info[0].images == {
+        IMAGE_ASSET_ID: si.ImageInfo(
+            filename=LwwValue(CrdtId(1, 17), IMAGE_FILENAME),
+            flags=LwwValue(CrdtId(0, 0), b"\x11\x00"),
+        )
+    }
+
+
+def test_read_image_item_block():
+    blocks = read_image_test_file()
+    items = [b for b in blocks if isinstance(b, SceneImageItemBlock)]
+
+    # Two deleted placements and one live one
+    assert [b.item.item_id for b in items] == [
+        CrdtId(1, 16),
+        CrdtId(1, 18),
+        CrdtId(1, 20),
+    ]
+    assert [b.item.deleted_length for b in items] == [1, 2, 0]
+    assert [b.item.value for b in items[:2]] == [None, None]
+
+    image = items[2].item.value
+    assert image.asset_id == IMAGE_ASSET_ID
+    assert image.vertices == IMAGE_VERTICES
+    assert image.move_id == CrdtId(1, 21)
+    assert image.uuid.timestamp == CrdtId(1, 22)
+
+
+def test_image_bounding_rect_matches_png_aspect_ratio():
+    blocks = read_image_test_file()
+    image = [
+        b.item.value
+        for b in blocks
+        if isinstance(b, SceneImageItemBlock) and b.item.value is not None
+    ][0]
+
+    rect = image.bounding_rect()
+    assert rect.x == pytest.approx(-613.595458984375)
+    assert rect.y == pytest.approx(505.03173828125)
+    assert rect.w == pytest.approx(1234.517333984375)
+    assert rect.h == pytest.approx(1304.660400390625)
+
+    # The backing PNG is 440x465, so the placement must have that shape.
+    assert rect.w / rect.h == pytest.approx(440 / 465, abs=1e-4)
+
+
+def test_image_item_block_keeps_unexpected_trailing_ints():
+    """Unfamiliar values are written back rather than replaced or rejected."""
+    block = SceneImageItemBlock(
+        parent_id=CrdtId(0, 11),
+        item=CrdtSequenceItem(
+            item_id=CrdtId(1, 20),
+            left_id=CrdtId(1, 19),
+            right_id=CrdtId(0, 0),
+            deleted_length=0,
+            value=si.Image(
+                uuid=LwwValue(CrdtId(1, 22), IMAGE_ASSET_ID.bytes_le),
+                vertices=IMAGE_VERTICES,
+                move_id=CrdtId(1, 21),
+                unknown_ints=[9, 9, 9, 9, 9, 9],
+            ),
+        ),
+    )
+
+    buf = BytesIO()
+    block.write(TaggedBlockWriter(buf))
+    buf.seek(0)
+    result = Block.read(TaggedBlockReader(buf))
+
+    assert result.item.value.unknown_ints == [9, 9, 9, 9, 9, 9]
+
+
+def test_image_vertices_must_be_whole_tuples():
+    """A truncated vertex list is reported, not silently misread."""
+    buf = BytesIO()
+    writer = TaggedBlockWriter(buf)
+    with writer.write_block(SceneImageItemBlock.BLOCK_TYPE, 2, 2):
+        writer.write_id(1, CrdtId(0, 11))
+        writer.write_id(2, CrdtId(1, 20))
+        writer.write_id(3, CrdtId(0, 0))
+        writer.write_id(4, CrdtId(0, 0))
+        writer.write_int(5, 0)
+        with writer.write_subblock(6):
+            writer.data.write_uint8(SceneImageItemBlock.ITEM_TYPE)
+            writer.write_lww_bytes(1, LwwValue(CrdtId(1, 22), IMAGE_ASSET_ID.bytes_le))
+            writer.write_id(2, CrdtId(1, 21))
+            with writer.write_subblock(3):
+                # Three floats is not a whole number of (x, y, u, v) tuples
+                writer.data.write_varuint(3)
+                for v in (1.0, 2.0, 3.0):
+                    writer.data.write_float32(v)
+            with writer.write_subblock(4):
+                writer.data.write_varuint(0)
+
+    buf.seek(0)
+    block = Block.read(TaggedBlockReader(buf))
+
+    # Errors in a single block are contained rather than failing the read
+    assert isinstance(block, UnreadableBlock)
+    assert "whole number" in block.error
